@@ -1,5 +1,5 @@
 ﻿// TradingConsole.Wpf/Services/Analysis/SignalGenerationService.cs
-// --- MODIFIED: Added EMA signal calculations and fixed dependency injection ---
+// --- MODIFIED: Added ATR and OBV signal calculations ---
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -14,10 +14,8 @@ namespace TradingConsole.Wpf.Services
         private readonly AnalysisStateManager _stateManager;
         private readonly SettingsViewModel _settingsViewModel;
         private readonly HistoricalIvService _historicalIvService;
-        // --- FIX: Added IndicatorService dependency ---
         private readonly IndicatorService _indicatorService;
 
-        // --- FIX: Updated constructor to accept IndicatorService ---
         public SignalGenerationService(AnalysisStateManager stateManager, SettingsViewModel settingsViewModel, HistoricalIvService historicalIvService, IndicatorService indicatorService)
         {
             _stateManager = stateManager;
@@ -65,7 +63,6 @@ namespace TradingConsole.Wpf.Services
             var fiveMinCandles = _stateManager.GetCandles(instrumentForAnalysis.SecurityId, TimeSpan.FromMinutes(5));
             var fifteenMinCandles = _stateManager.GetCandles(instrumentForAnalysis.SecurityId, TimeSpan.FromMinutes(15));
 
-            // --- FIX: Added the missing EMA signal calculations ---
             if (oneMinCandles != null && oneMinCandles.Any())
             {
                 result.EmaSignal1Min = _indicatorService.CalculateEmaSignal(instrumentForAnalysis.SecurityId, oneMinCandles, _stateManager.MultiTimeframePriceEmaState, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength, false);
@@ -82,11 +79,43 @@ namespace TradingConsole.Wpf.Services
                 result.VwapEmaSignal15Min = _indicatorService.CalculateEmaSignal(instrumentForAnalysis.SecurityId, fifteenMinCandles, _stateManager.MultiTimeframeVwapEmaState, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength, true);
             }
 
+            if (oneMinCandles != null && oneMinCandles.Any())
+            {
+                var rsiState = _stateManager.MultiTimeframeRsiState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)];
+                result.RsiValue1Min = _indicatorService.CalculateRsi(oneMinCandles, rsiState, _settingsViewModel.RsiPeriod);
+                result.RsiSignal1Min = _indicatorService.DetectRsiDivergence(oneMinCandles, rsiState, _settingsViewModel.RsiDivergenceLookback);
+            }
+            if (fiveMinCandles != null && fiveMinCandles.Any())
+            {
+                var rsiState = _stateManager.MultiTimeframeRsiState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)];
+                result.RsiValue5Min = _indicatorService.CalculateRsi(fiveMinCandles, rsiState, _settingsViewModel.RsiPeriod);
+                result.RsiSignal5Min = _indicatorService.DetectRsiDivergence(fiveMinCandles, rsiState, _settingsViewModel.RsiDivergenceLookback);
+            }
+
+            // --- FIX: Added ATR and OBV calculations ---
+            if (oneMinCandles != null && oneMinCandles.Any())
+            {
+                var atrState = _stateManager.MultiTimeframeAtrState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)];
+                result.Atr1Min = _indicatorService.CalculateAtr(oneMinCandles, atrState, _settingsViewModel.AtrPeriod);
+
+                var obvState = _stateManager.MultiTimeframeObvState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)];
+                result.ObvValue1Min = _indicatorService.CalculateObv(oneMinCandles, obvState);
+            }
+            if (fiveMinCandles != null && fiveMinCandles.Any())
+            {
+                var atrState = _stateManager.MultiTimeframeAtrState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)];
+                result.Atr5Min = _indicatorService.CalculateAtr(fiveMinCandles, atrState, _settingsViewModel.AtrPeriod);
+                result.AtrSignal5Min = (atrState.AtrValues.Count > 2 && result.Atr5Min < atrState.AtrValues[^2]) ? "Vol Contracting" : "Vol Expanding";
+
+                var obvState = _stateManager.MultiTimeframeObvState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)];
+                result.ObvValue5Min = _indicatorService.CalculateObv(fiveMinCandles, obvState);
+            }
+
+
             if (oneMinCandles != null) result.CandleSignal1Min = RecognizeCandlestickPattern(oneMinCandles, result);
             if (fiveMinCandles != null)
             {
                 result.CandleSignal5Min = RecognizeCandlestickPattern(fiveMinCandles, result);
-                // --- NEW: Calculate Market Regime ---
                 result.MarketRegime = CalculateMarketRegime(fiveMinCandles, instrumentForAnalysis.SecurityId);
             }
 
@@ -106,7 +135,6 @@ namespace TradingConsole.Wpf.Services
             if (instrument.InstrumentType == "INDEX") { result.InstitutionalIntent = RunTier1InstitutionalIntentAnalysis(instrument); }
             result.VolatilityStateSignal = GenerateVolatilityStateSignal(instrumentForAnalysis, result);
 
-            // --- NEW: Calculate Intraday IV Spike Signal ---
             result.IntradayIvSpikeSignal = CalculateIntradayIvSpikeSignal(instrument);
         }
 
@@ -120,9 +148,8 @@ namespace TradingConsole.Wpf.Services
             ivState.DayHighIv = Math.Max(ivState.DayHighIv, instrument.ImpliedVolatility);
             ivState.DayLowIv = Math.Min(ivState.DayLowIv, instrument.ImpliedVolatility);
 
-            // --- NEW: Store IV history for spike detection ---
             ivState.IvHistory.Add(instrument.ImpliedVolatility);
-            if (ivState.IvHistory.Count > 15) // Keep a rolling 15-period history
+            if (ivState.IvHistory.Count > 15)
             {
                 ivState.IvHistory.RemoveAt(0);
             }
@@ -130,7 +157,6 @@ namespace TradingConsole.Wpf.Services
             _historicalIvService.RecordDailyIv(ivKey, ivState.DayHighIv, ivState.DayLowIv);
             var (ivRank, ivPercentile) = CalculateIvRankAndPercentile(instrument.ImpliedVolatility, ivKey, ivState);
 
-            // Find the correct underlying (e.g., Nifty 50) to store the result
             var underlyingInstrument = _stateManager.AnalysisResults.Values.FirstOrDefault(r => r.Symbol == instrument.UnderlyingSymbol);
             if (underlyingInstrument != null)
             {
@@ -142,12 +168,9 @@ namespace TradingConsole.Wpf.Services
 
         #region Signal Calculation Logic
 
-        /// <summary>
-        /// REVISED: Calculates the OI signal based on a 3-minute candle, aligning with the exchange's data update frequency.
-        /// </summary>
         private string CalculateOiSignal(List<Candle> candles)
         {
-            if (candles.Count < 2) return "Building History..."; // Now requires two 3-min candles
+            if (candles.Count < 2) return "Building History...";
             var currentCandle = candles.Last();
             var previousCandle = candles[candles.Count - 2];
             if (previousCandle.OpenInterest == 0 || currentCandle.OpenInterest == 0) return "Building History...";
@@ -164,9 +187,6 @@ namespace TradingConsole.Wpf.Services
             return "Neutral";
         }
 
-        /// <summary>
-        /// NEW: Determines the market volatility regime based on ATR.
-        /// </summary>
         private string CalculateMarketRegime(List<Candle> fiveMinCandles, string securityId)
         {
             var atrState = _stateManager.MultiTimeframeAtrState[securityId][TimeSpan.FromMinutes(5)];
@@ -180,12 +200,9 @@ namespace TradingConsole.Wpf.Services
             return "Normal Volatility";
         }
 
-        /// <summary>
-        /// NEW: Detects sharp intraday spikes in Implied Volatility.
-        /// </summary>
         private string CalculateIntradayIvSpikeSignal(DashboardInstrument instrument)
         {
-            var ivKey = GetHistoricalIvKey(instrument, 0); // Underlying price not needed here
+            var ivKey = GetHistoricalIvKey(instrument, 0);
             if (!_stateManager.IntradayIvStates.TryGetValue(ivKey, out var ivState) || ivState.IvHistory.Count < 10)
             {
                 return "N/A";
@@ -201,15 +218,11 @@ namespace TradingConsole.Wpf.Services
             return "IV Stable";
         }
 
-        /// <summary>
-        /// REVISED: Now distributes volume across price levels and triggers the calculation of derived profile metrics.
-        /// </summary>
         public void UpdateMarketProfile(MarketProfile profile, Candle priceCandle, Candle volumeCandle)
         {
             profile.UpdateInitialBalance(priceCandle);
             var tpoPeriod = profile.GetTpoPeriod(priceCandle.Timestamp);
 
-            // --- Volume Distribution Logic ---
             var priceRange = new List<decimal>();
             for (decimal price = priceCandle.Low; price <= priceCandle.High; price += profile.TickSize)
             {
@@ -221,17 +234,13 @@ namespace TradingConsole.Wpf.Services
                 long volumePerTick = priceRange.Count > 0 ? volumeCandle.Volume / priceRange.Count : 0;
                 foreach (var price in priceRange)
                 {
-                    // TPO Update
                     if (!profile.TpoLevels.ContainsKey(price)) profile.TpoLevels[price] = new List<char>();
                     if (!profile.TpoLevels[price].Contains(tpoPeriod)) profile.TpoLevels[price].Add(tpoPeriod);
 
-                    // Volume Profile Update
                     if (!profile.VolumeLevels.ContainsKey(price)) profile.VolumeLevels[price] = 0;
                     profile.VolumeLevels[price] += volumePerTick;
                 }
             }
-
-            // --- FIX: Trigger the calculation of derived profile metrics (POC, VAH, VAL) ---
             profile.CalculateProfileMetrics();
         }
 

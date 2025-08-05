@@ -1,4 +1,5 @@
 ﻿// TradingConsole.Wpf/Services/Analysis/IndicatorService.cs
+// --- MODIFIED: Added RSI Divergence detection logic ---
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -33,7 +34,6 @@ namespace TradingConsole.Wpf.Services
             {
                 var initialChanges = candles.Skip(1).Select((c, i) => c.Close - candles[i].Close).ToList();
                 state.AvgGain = initialChanges.Take(period).Where(ch => ch > 0).DefaultIfEmpty(0).Average();
-                // --- FIX: Corrected the LINQ lambda expression here ---
                 state.AvgLoss = initialChanges.Take(period).Where(ch => ch < 0).Select(ch => -ch).DefaultIfEmpty(0).Average();
             }
             else
@@ -52,6 +52,75 @@ namespace TradingConsole.Wpf.Services
 
             return Math.Round(rsi, 2);
         }
+
+        /// <summary>
+        /// --- NEW: Detects bullish or bearish divergence between price and RSI ---
+        /// </summary>
+        public string DetectRsiDivergence(List<Candle> candles, RsiState state, int lookbackPeriod)
+        {
+            if (candles.Count < lookbackPeriod || state.RsiValues.Count < lookbackPeriod)
+            {
+                return "N/A";
+            }
+
+            var recentCandles = candles.TakeLast(lookbackPeriod).ToList();
+            var recentRsi = state.RsiValues.TakeLast(lookbackPeriod).ToList();
+
+            // Find the lowest low in price and its index
+            decimal lowestPrice = recentCandles.Min(c => c.Low);
+            int lowestPriceIndex = recentCandles.FindLastIndex(c => c.Low == lowestPrice);
+
+            // Find the highest high in price and its index
+            decimal highestPrice = recentCandles.Max(c => c.High);
+            int highestPriceIndex = recentCandles.FindLastIndex(c => c.High == highestPrice);
+
+            // Check for Bullish Divergence (Lower Low in Price, Higher Low in RSI)
+            if (lowestPriceIndex == lookbackPeriod - 1) // The most recent candle is part of the new low
+            {
+                var previousCandles = recentCandles.Take(lowestPriceIndex).ToList();
+                if (previousCandles.Any())
+                {
+                    decimal previousLowPrice = previousCandles.Min(c => c.Low);
+                    int previousLowPriceIndex = previousCandles.FindLastIndex(c => c.Low == previousLowPrice);
+
+                    if (lowestPrice < previousLowPrice) // Confirmed lower low in price
+                    {
+                        decimal rsiAtCurrentLow = recentRsi[lowestPriceIndex];
+                        decimal rsiAtPreviousLow = recentRsi[previousLowPriceIndex];
+
+                        if (rsiAtCurrentLow > rsiAtPreviousLow)
+                        {
+                            return "Bullish Divergence";
+                        }
+                    }
+                }
+            }
+
+            // Check for Bearish Divergence (Higher High in Price, Lower High in RSI)
+            if (highestPriceIndex == lookbackPeriod - 1) // The most recent candle is part of the new high
+            {
+                var previousCandles = recentCandles.Take(highestPriceIndex).ToList();
+                if (previousCandles.Any())
+                {
+                    decimal previousHighPrice = previousCandles.Max(c => c.High);
+                    int previousHighPriceIndex = previousCandles.FindLastIndex(c => c.High == previousHighPrice);
+
+                    if (highestPrice > previousHighPrice) // Confirmed higher high in price
+                    {
+                        decimal rsiAtCurrentHigh = recentRsi[highestPriceIndex];
+                        decimal rsiAtPreviousHigh = recentRsi[previousHighPriceIndex];
+
+                        if (rsiAtCurrentHigh < rsiAtPreviousHigh)
+                        {
+                            return "Bearish Divergence";
+                        }
+                    }
+                }
+            }
+
+            return "No Divergence";
+        }
+
 
         public decimal CalculateAtr(List<Candle> candles, AtrState state, int period)
         {
