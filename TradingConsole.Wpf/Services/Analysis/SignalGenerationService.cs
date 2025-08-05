@@ -1,5 +1,5 @@
 ﻿// TradingConsole.Wpf/Services/Analysis/SignalGenerationService.cs
-// --- MODIFIED: Added a call to the new profile calculation method ---
+// --- MODIFIED: Added EMA signal calculations and fixed dependency injection ---
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -14,12 +14,16 @@ namespace TradingConsole.Wpf.Services
         private readonly AnalysisStateManager _stateManager;
         private readonly SettingsViewModel _settingsViewModel;
         private readonly HistoricalIvService _historicalIvService;
+        // --- FIX: Added IndicatorService dependency ---
+        private readonly IndicatorService _indicatorService;
 
-        public SignalGenerationService(AnalysisStateManager stateManager, SettingsViewModel settingsViewModel, HistoricalIvService historicalIvService)
+        // --- FIX: Updated constructor to accept IndicatorService ---
+        public SignalGenerationService(AnalysisStateManager stateManager, SettingsViewModel settingsViewModel, HistoricalIvService historicalIvService, IndicatorService indicatorService)
         {
             _stateManager = stateManager;
             _settingsViewModel = settingsViewModel;
             _historicalIvService = historicalIvService;
+            _indicatorService = indicatorService;
         }
 
         public void GenerateAllSignals(DashboardInstrument instrument, DashboardInstrument instrumentForAnalysis, AnalysisResult result)
@@ -59,6 +63,25 @@ namespace TradingConsole.Wpf.Services
             }
 
             var fiveMinCandles = _stateManager.GetCandles(instrumentForAnalysis.SecurityId, TimeSpan.FromMinutes(5));
+            var fifteenMinCandles = _stateManager.GetCandles(instrumentForAnalysis.SecurityId, TimeSpan.FromMinutes(15));
+
+            // --- FIX: Added the missing EMA signal calculations ---
+            if (oneMinCandles != null && oneMinCandles.Any())
+            {
+                result.EmaSignal1Min = _indicatorService.CalculateEmaSignal(instrumentForAnalysis.SecurityId, oneMinCandles, _stateManager.MultiTimeframePriceEmaState, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength, false);
+                result.VwapEmaSignal1Min = _indicatorService.CalculateEmaSignal(instrumentForAnalysis.SecurityId, oneMinCandles, _stateManager.MultiTimeframeVwapEmaState, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength, true);
+            }
+            if (fiveMinCandles != null && fiveMinCandles.Any())
+            {
+                result.EmaSignal5Min = _indicatorService.CalculateEmaSignal(instrumentForAnalysis.SecurityId, fiveMinCandles, _stateManager.MultiTimeframePriceEmaState, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength, false);
+                result.VwapEmaSignal5Min = _indicatorService.CalculateEmaSignal(instrumentForAnalysis.SecurityId, fiveMinCandles, _stateManager.MultiTimeframeVwapEmaState, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength, true);
+            }
+            if (fifteenMinCandles != null && fifteenMinCandles.Any())
+            {
+                result.EmaSignal15Min = _indicatorService.CalculateEmaSignal(instrumentForAnalysis.SecurityId, fifteenMinCandles, _stateManager.MultiTimeframePriceEmaState, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength, false);
+                result.VwapEmaSignal15Min = _indicatorService.CalculateEmaSignal(instrumentForAnalysis.SecurityId, fifteenMinCandles, _stateManager.MultiTimeframeVwapEmaState, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength, true);
+            }
+
             if (oneMinCandles != null) result.CandleSignal1Min = RecognizeCandlestickPattern(oneMinCandles, result);
             if (fiveMinCandles != null)
             {

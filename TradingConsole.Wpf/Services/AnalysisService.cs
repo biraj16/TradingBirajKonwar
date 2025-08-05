@@ -1,5 +1,5 @@
 ﻿// TradingConsole.Wpf/Services/AnalysisService.cs
-// --- MODIFIED: Re-architected the analysis data flow for true real-time updates ---
+// --- MODIFIED: Correctly passed the IndicatorService dependency ---
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -45,7 +45,8 @@ namespace TradingConsole.Wpf.Services
             _indicatorStateService = indicatorStateService;
             _stateManager = new AnalysisStateManager();
             _indicatorService = new IndicatorService(_stateManager);
-            _signalGenerationService = new SignalGenerationService(_stateManager, settingsViewModel, historicalIvService);
+            // --- FIX: Pass the IndicatorService into the SignalGenerationService ---
+            _signalGenerationService = new SignalGenerationService(_stateManager, settingsViewModel, historicalIvService, _indicatorService);
             _thesisSynthesizer = new ThesisSynthesizer(settingsViewModel, signalLoggerService, notificationService, _stateManager);
         }
 
@@ -94,17 +95,9 @@ namespace TradingConsole.Wpf.Services
                 }
             }
 
-            // --- DATA FLOW FIX ---
-            // The analysis is now run on every tick.
-            // The candle aggregation above ensures that when the analysis runs,
-            // it has the most up-to-date candle data for its calculations.
             RunComplexAnalysis(instrument, newCandleFormed);
         }
 
-        /// <summary>
-        /// Aggregates live data into time-based candles.
-        /// </summary>
-        /// <returns>True if a new candle was formed, false otherwise.</returns>
         private bool AggregateIntoCandle(DashboardInstrument instrument, TimeSpan timeframe)
         {
             var candles = _stateManager.GetCandles(instrument.SecurityId, timeframe);
@@ -123,7 +116,7 @@ namespace TradingConsole.Wpf.Services
                     if (timeframe.TotalMinutes == 1) UpdateMarketProfileForCandle(instrument, currentCandle);
                 }
                 CandleUpdated?.Invoke(instrument.SecurityId, newCandle, timeframe);
-                return true; // A new candle was formed
+                return true;
             }
             else
             {
@@ -133,7 +126,7 @@ namespace TradingConsole.Wpf.Services
                 currentCandle.Volume += instrument.LastTradedQuantity;
                 currentCandle.OpenInterest = (long)instrument.OpenInterest;
                 CandleUpdated?.Invoke(instrument.SecurityId, currentCandle, timeframe);
-                return false; // Existing candle was updated
+                return false;
             }
         }
 
@@ -141,17 +134,14 @@ namespace TradingConsole.Wpf.Services
         {
             var result = _stateManager.GetResult(instrument.SecurityId);
 
-            // This is the critical fix to ensure live price is used in analysis
             result.LTP = instrument.LTP;
             result.PriceChange = instrument.LTP - instrument.Close;
             result.PriceChangePercent = (instrument.Close > 0) ? (result.PriceChange / instrument.Close) : 0;
 
             DashboardInstrument instrumentForAnalysis = GetInstrumentForVolumeAnalysis(instrument);
 
-            // Generate all signals using the latest price and candle data.
             _signalGenerationService.GenerateAllSignals(instrument, instrumentForAnalysis, result);
 
-            // Only synthesize the final signal if a new candle has formed, to avoid signal flittering.
             if (newCandleFormed)
             {
                 _thesisSynthesizer.SynthesizeTradeSignal(result);
